@@ -1,30 +1,15 @@
-// Fluxer-Discord Bridge Configuration Template
-// Copy to config.js and fill in your values
+// If preferred, you could just rename this to config.js and use a .env file instead
+// for cases like Docker / Dokploy, which is what I'll be using, so both methods are supported. 
+// Just make sure if you do, that you account for the fact it will need to be renamed!!
 
 module.exports = {
-  // Discord Bot Configuration
   discord: {
-    token: '',
-    serverId: '',
-    // Optional: specific webhook URL for name/avatar preservation
-    // If not set, bridge uses bot token (no name/avatar override)
-    webhookUrl: ''
+    token: '' || 'process.env.DISCORD_TOKEN',
+    serverId: '' || 'process.env.DISCORD_SERVERID'
   },
-
-  // Fluxer Configuration
   fluxer: {
-    token: '',
-    guildId: '',
-    // Fluxer API endpoint (default: https://api.fluxer.app)
-    apiUrl: 'https://api.fluxer.app/v1',
-    // Fluxer Gateway WebSocket endpoint
-    gatewayUrl: 'wss://gateway.fluxer.app',
-    // Optional: specific webhook URL for Fluxer
-    webhookUrl: ''
+    token: '' || 'process.env.FLUXER_TOKEN',
+    guildId: '' || 'process.env.FLUXER_GUILDID'
   },
-
-  // Channel mapping strategy
-  // 'by_name' - match Discord channels to Fluxer channels by name
-  // 'by_position' - match by channel position (fallback)
-  channelMapping: 'by_name'
+  channelMapping: '' || 'process.env.MAPPING_TYPE'
 };
