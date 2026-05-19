@@ -3,13 +3,7 @@
 const { BridgeManager } = require('./flux2disc');
 
 let config;
-try {
-  config = require('./config');
-} catch (e) {
-  console.error('[Flux2Disc Bridge] ERROR: config.js not found!');
-  console.error('[Flux2Disc Bridge] Copy config.example.js to config.js and fill in your tokens.');
-  process.exit(1);
-}
+//i wonder if we even need it to require that
 
 function validateConfig() {
   const required = ['discord.token', 'discord.serverId', 'fluxer.token', 'fluxer.guildId'];
