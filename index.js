@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-const { BridgeManager } = require('./flux2disc');
+require('dotenv').config();
 
-let config;
-//i wonder if we even need it to require that
+const { BridgeManager } = require('./flux2disc');
+let config = require('./config');
 
 function validateConfig() {
   const required = ['discord.token', 'discord.serverId', 'fluxer.token', 'fluxer.guildId'];
