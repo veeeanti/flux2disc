@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { BridgeManager } = require('./flux2disc-bridge');
+const { BridgeManager } = require('./flux2disc');
 
 let config;
 try {
