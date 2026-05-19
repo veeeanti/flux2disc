@@ -99,6 +99,8 @@ class BridgeManager {
 
     log('[Bridge] Found', textChannels.size, 'Discord channels,', fluxerChannels.length, 'Fluxer channels');
 
+    const mappingData = [];
+
     for (const [, discordChan] of textChannels) {
       const fluxerChan = fluxerChannels.find(c => c.name === discordChan.name);
       if (!fluxerChan) {
@@ -132,19 +134,33 @@ class BridgeManager {
         logError('Fluxer webhook creation failed', e);
       }
 
-      this.mappings.set(discordChan.id, {
+      const mapping = {
         discordChannelId: discordChan.id,
+        discordChannelName: discordChan.name,
         fluxerChannelId: fluxerChan.id,
+        fluxerChannelName: fluxerChan.name,
         discordWebhookUrl: discordWebhookUrl,
         fluxerWebhook: fluxerWebhook
-      });
-      this.mappings.set(fluxerChan.id, {
+      };
+
+      this.mappings.set(discordChan.id, mapping);
+      this.mappings.set(fluxerChan.id, mapping);
+
+      mappingData.push({
+        channelName: discordChan.name,
         discordChannelId: discordChan.id,
         fluxerChannelId: fluxerChan.id,
         discordWebhookUrl: discordWebhookUrl,
         fluxerWebhook: fluxerWebhook
       });
     }
+
+    // Save mappings to file
+    const fs = require('fs');
+    const path = require('path');
+    const outputPath = path.join(process.cwd(), 'webhook-mappings.json');
+    fs.writeFileSync(outputPath, JSON.stringify(mappingData, null, 2));
+    log('[Bridge] Saved webhook mappings to:', outputPath);
   }
 
   getFluxerWebhookClient(webhookData) {
