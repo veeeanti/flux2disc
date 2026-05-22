@@ -12,6 +12,8 @@ try {
   process.exit(1);
 }
 
+// Store message mappings to track which messages correspond across platforms
+// Structure: { discordMessageId: fluxerMessageId, fluxerMessageId: discordMessageId }
 const messageMaps = {
   discordToFluxer: new Map(),
   fluxerToDiscord: new Map()
@@ -39,7 +41,7 @@ class BridgeManager {
     // Initialize Discord client
     this.discordClient = new DiscordClient({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-      partials: [Partials.Channel]
+      partials: [Partials.Channel, Partials.Message] // Add Partials.Message for handling deleted messages
     });
 
     this.discordClient.once('ready', () => {
@@ -56,7 +58,57 @@ class BridgeManager {
       }
 
       log('[Discord] Relaying to Fluxer, channel:', message.channel.name);
-      await this.sendToFluxer(message, mapping);
+      const fluxerMessageId = await this.sendToFluxer(message, mapping);
+      if (fluxerMessageId) {
+        // Store the mapping for updates/deletes
+        messageMaps.discordToFluxer.set(message.id, fluxerMessageId);
+        messageMaps.fluxerToDiscord.set(fluxerMessageId, message.id);
+      }
+    });
+
+    this.discordClient.on('messageUpdate', async (oldMessage, newMessage) => {
+      // Ignore if bot's own message or if it's a partial that wasn't cached
+      if (newMessage.author.bot || !newMessage.content) return;
+
+      const mapping = this.mappings.get(newMessage.channel.id);
+      if (!mapping) {
+        log('[Discord] Message update in unmapped channel:', newMessage.channel.name);
+        return;
+      }
+
+      // Check if we have a mapping for this message
+      const fluxerMessageId = messageMaps.discordToFluxer.get(newMessage.id);
+      if (!fluxerMessageId) {
+        log('[Discord] No Fluxer mapping found for message:', newMessage.id);
+        return;
+      }
+
+      log('[Discord] Updating message in Fluxer, channel:', newMessage.channel.name);
+      await this.updateFluxerMessage(newMessage, mapping, fluxerMessageId);
+    });
+
+    this.discordClient.on('messageDelete', async (message) => {
+      if (message.author.bot) return;
+
+      const mapping = this.mappings.get(message.channel.id);
+      if (!mapping) {
+        log('[Discord] Message delete in unmapped channel:', message.channel.name);
+        return;
+      }
+
+      // Check if we have a mapping for this message
+      const fluxerMessageId = messageMaps.discordToFluxer.get(message.id);
+      if (!fluxerMessageId) {
+        log('[Discord] No Fluxer mapping found for deleted message:', message.id);
+        return;
+      }
+
+      log('[Discord] Deleting message in Fluxer, channel:', message.channel.name);
+      await this.deleteFluxerMessage(mapping, fluxerMessageId);
+      
+      // Clean up mappings
+      messageMaps.discordToFluxer.delete(message.id);
+      messageMaps.fluxerToDiscord.delete(fluxerMessageId);
     });
 
     await this.discordClient.login(this.config.discord.token);
@@ -78,8 +130,57 @@ class BridgeManager {
       }
 
       log('[Fluxer] Relaying to Discord, channelId:', message.channelId);
-      const webhookClient = new WebhookClient({ url: mapping.discordWebhookUrl });
-      await this.sendToDiscord(message, webhookClient);
+      const discordMessageId = await this.sendToDiscord(message, mapping);
+      if (discordMessageId) {
+        // Store the mapping for updates/deletes
+        messageMaps.fluxerToDiscord.set(message.id, discordMessageId);
+        messageMaps.discordToFluxer.set(discordMessageId, message.id);
+      }
+    });
+
+    this.fluxerClient.on('messageUpdate', async (_oldMessage, newMessage) => {
+      // Ignore if bot's own message
+      if (newMessage.author?.bot) return;
+
+      const mapping = this.mappings.get(newMessage.channelId);
+      if (!mapping || !mapping.discordWebhookUrl) {
+        log('[Fluxer] Message update in unmapped channel:', message.channelId);
+        return;
+      }
+
+      // Check if we have a mapping for this message
+      const discordMessageId = messageMaps.fluxerToDiscord.get(newMessage.id);
+      if (!discordMessageId) {
+        log('[Fluxer] No Discord mapping found for message:', newMessage.id);
+        return;
+      }
+
+      log('[Fluxer] Updating message in Discord, channelId:', newMessage.channelId);
+      await this.updateDiscordMessage(newMessage, mapping, discordMessageId);
+    });
+
+    this.fluxerClient.on('messageDelete', async (message) => {
+      if (message.author?.bot) return;
+
+      const mapping = this.mappings.get(message.channelId);
+      if (!mapping || !mapping.discordWebhookUrl) {
+        log('[Fluxer] Message delete in unmapped channel:', message.channelId);
+        return;
+      }
+
+      // Check if we have a mapping for this message
+      const discordMessageId = messageMaps.fluxerToDiscord.get(message.id);
+      if (!discordMessageId) {
+        log('[Fluxer] No Discord mapping found for deleted message:', message.id);
+        return;
+      }
+
+      log('[Fluxer] Deleting message in Discord, channelId:', message.channelId);
+      await this.deleteDiscordMessage(mapping, discordMessageId);
+      
+      // Clean up mappings
+      messageMaps.fluxerToDiscord.delete(message.id);
+      messageMaps.discordToFluxer.delete(discordMessageId);
     });
 
     await this.fluxerClient.login(this.config.fluxer.token);
@@ -173,7 +274,7 @@ class BridgeManager {
       const webhook = this.getFluxerWebhookClient(mapping.fluxerWebhook);
       if (!webhook) {
         log('[Discord->Fluxer] No Fluxer webhook available - skipping');
-        return;
+        return null;
       }
 
       const username = message.author.displayName || message.author.username;
@@ -192,7 +293,7 @@ class BridgeManager {
           });
         }
 
-        await webhook.send({
+        const sentMessage = await webhook.send({
           content: content,
           username: username,
           avatar_url: avatarUrl,
@@ -203,35 +304,134 @@ class BridgeManager {
             name: a.name
           }))
         }, true);
+
+        log('[Discord->Fluxer] SENT:', (content || '(attachment)').substring(0, 50));
+        return sentMessage.id; // Return the sent message ID
       } else {
-        await webhook.send({
+        const sentMessage = await webhook.send({
           content: content,
           username: username,
           avatar_url: avatarUrl
         }, true);
-      }
 
-      log('[Discord->Fluxer] SENT:', (content || '(attachment)').substring(0, 50));
+        log('[Discord->Fluxer] SENT:', (content || '(attachment)').substring(0, 50));
+        return sentMessage.id; // Return the sent message ID
+      }
     } catch (error) {
       logError('[Discord->Fluxer] FAILED', error);
+      return null;
     }
   }
 
-  async sendToDiscord(message, webhookClient) {
+  async sendToDiscord(message, mapping) {
     try {
+      const webhookClient = new WebhookClient({ url: mapping.discordWebhookUrl });
       const username = message.author?.username || 'Fluxer User';
       // Fluxer avatars should work as-is
       const avatarUrl = message.author?.avatarURL?.() || undefined;
       
-      await webhookClient.send({
+      const sentMessage = await webhookClient.send({
         content: message.content || '',
         username: username,
         avatarURL: avatarUrl
       });
 
       log('[Fluxer->Discord] SENT:', ((message.content || '').substring(0, 50) || '(empty)'));
+      return sentMessage.id; // Return the sent message ID
     } catch (error) {
       logError('[Fluxer->Discord] FAILED', error);
+      return null;
+    }
+  }
+
+  async updateFluxerMessage(message, mapping, fluxerMessageId) {
+    try {
+      const webhook = this.getFluxerWebhookClient(mapping.fluxerWebhook);
+      if (!webhook) {
+        log('[Discord->Fluxer] No Fluxer webhook available for update - skipping');
+        return;
+      }
+
+      const username = message.author.displayName || message.author.username;
+      let avatarUrl = message.author.displayAvatarURL({ size: 4096, format: 'png' });
+      const content = message.content || '';
+
+      // Handle attachments (simplified - in practice you might need to re-upload)
+      if (message.attachments?.size > 0) {
+        const attachments = [];
+        for (const [, attachment] of message.attachments) {
+          attachments.push({
+            url: attachment.url,
+            name: attachment.name,
+            filename: attachment.name
+          });
+        }
+
+        await webhook.editMessage(fluxerMessageId, {
+          content: content,
+          username: username,
+          avatar_url: avatarUrl,
+          files: attachments,
+          attachments: attachments.map((a, i) => ({
+            id: i,
+            filename: a.filename,
+            name: a.name
+          }))
+        });
+      } else {
+        await webhook.editMessage(fluxerMessageId, {
+          content: content,
+          username: username,
+          avatar_url: avatarUrl
+        });
+      }
+
+      log('[Discord->Fluxer] UPDATED message:', fluxerMessageId);
+    } catch (error) {
+      logError('[Discord->Fluxer] UPDATE FAILED', error);
+    }
+  }
+
+  async deleteFluxerMessage(mapping, fluxerMessageId) {
+    try {
+      const webhook = this.getFluxerWebhookClient(mapping.fluxerWebhook);
+      if (!webhook) {
+        log('[Discord->Fluxer] No Fluxer webhook available for delete - skipping');
+        return;
+      }
+
+      await webhook.deleteMessage(fluxerMessageId);
+      log('[Discord->Fluxer] DELETED message:', fluxerMessageId);
+    } catch (error) {
+      logError('[Discord->Fluxer] DELETE FAILED', error);
+    }
+  }
+
+  async updateDiscordMessage(message, mapping, discordMessageId) {
+    try {
+      const webhookClient = new WebhookClient({ url: mapping.discordWebhookUrl });
+      const username = message.author?.username || 'Fluxer User';
+      const avatarUrl = message.author?.avatarURL?.() || undefined;
+      
+      await webhookClient.editMessage(discordMessageId, {
+        content: message.content || '',
+        username: username,
+        avatarURL: avatarUrl
+      });
+
+      log('[Fluxer->Discord] UPDATED message:', discordMessageId);
+    } catch (error) {
+      logError('[Fluxer->Discord] UPDATE FAILED', error);
+    }
+  }
+
+  async deleteDiscordMessage(mapping, discordMessageId) {
+    try {
+      const webhookClient = new WebhookClient({ url: mapping.discordWebhookUrl });
+      await webhookClient.deleteMessage(discordMessageId);
+      log('[Fluxer->Discord] DELETED message:', discordMessageId);
+    } catch (error) {
+      logError('[Fluxer->Discord] DELETE FAILED', error);
     }
   }
 
