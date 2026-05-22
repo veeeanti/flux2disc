@@ -325,19 +325,39 @@ class BridgeManager {
 
   async sendToDiscord(message, mapping) {
     try {
-      const webhookClient = new WebhookClient({ url: mapping.discordWebhookUrl });
+      const channel = await this.discordClient.channels.fetch(mapping.discordChannelId);
+      if (!channel) {
+        log('[Fluxer->Discord] Could not find Discord channel', mapping.discordChannelId);
+        return null;
+      }
+
       const username = message.author?.username || 'Fluxer User';
-      // Fluxer avatars should work as-is
       const avatarUrl = message.author?.avatarURL?.() || undefined;
       
+      const webhookClient = new WebhookClient({ url: mapping.discordWebhookUrl });
+      
+      let content = message.content || '';
+      
+      // Check if this message is a reply in Fluxer
+      if (message.replyTo) {
+        const originalFluxerId = message.replyTo.id;
+        const discordMsgId = messageMaps.fluxerToDiscord.get(originalFluxerId);
+        
+        if (discordMsgId) {
+          content = `<SAYING TO <#${mapping.discordChannelId}>: ${discordMsgId}>\n${content}`;
+          // Note: Webhooks can't use the native .reply() method, 
+          // but we can include a reference or a mention.
+        }
+      }
+
       const sentMessage = await webhookClient.send({
-        content: message.content || '',
+        content: content,
         username: username,
         avatarURL: avatarUrl
       });
 
       log('[Fluxer->Discord] SENT:', ((message.content || '').substring(0, 50) || '(empty)'));
-      return sentMessage.id; // Return the sent message ID
+      return sentMessage.id;
     } catch (error) {
       logError('[Fluxer->Discord] FAILED', error);
       return null;
